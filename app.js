@@ -1,351 +1,269 @@
-﻿const motionToggle = document.querySelector("#motion-toggle");
-const filterButtons = document.querySelectorAll(".filter-btn");
-const clipsGrid = document.querySelector("#clips-grid");
-const buildGallery = document.querySelector("#build-gallery");
-const contactForm = document.querySelector("#contact-form");
-const toast = document.querySelector("#toast");
+const videoInput = document.querySelector("#videoFile");
+const tempoInput = document.querySelector("#tempo");
+const analyzeBtn = document.querySelector("#analyzeBtn");
+const exportTxtBtn = document.querySelector("#exportTxtBtn");
+const exportJsonBtn = document.querySelector("#exportJsonBtn");
+const statusText = document.querySelector("#status");
+const player = document.querySelector("#player");
+const tabTrack = document.querySelector("#tabTrack");
+const tabViewport = document.querySelector("#tabViewport");
+const tabLegend = document.querySelector("#tabLegend");
 
-const lightbox = document.querySelector("#lightbox");
-const lightboxImage = document.querySelector("#lightbox-image");
-const lightboxCaption = document.querySelector("#lightbox-caption");
-const lightboxPrev = document.querySelector("#lightbox-prev");
-const lightboxNext = document.querySelector("#lightbox-next");
-const lightboxClose = document.querySelector("#lightbox-close");
+let videoUrl = "";
+let noteEvents = [];
+let rafId = 0;
 
-const BUILD_IMAGES = [
-  { src: "images/build-01.jpg", caption: "Modern Tower Block" },
-  { src: "images/build-02.jpg", caption: "Neon City Avenue" },
-  { src: "images/build-03.jpg", caption: "Glass Skybridge Hub" },
-  { src: "images/build-04.jpg", caption: "Cyber Transit Center" },
-  { src: "images/build-05.jpg", caption: "Luxury Penthouse Interior" },
-  { src: "images/build-06.jpg", caption: "Riverside Night District" },
-];
+const STRINGS = ["e", "B", "G", "D", "A", "E"];
+const STRING_MIDI = [64, 59, 55, 50, 45, 40];
+const PX_PER_SECOND = 140;
 
-const CLIPS = [
-  {
-    game: "cs2",
-    type: "youtube",
-    title: "CS2 Short Highlight",
-    url: "https://www.youtube.com/shorts/VVnmMqMdX_w",
-  },
-  {
-    game: "cs2",
-    type: "youtube",
-    title: "CS2 Match Play",
-    url: "https://www.youtube.com/watch?v=h6-NFmosRCw",
-  },
-  {
-    game: "mc",
-    type: "youtube",
-    title: "Minecraft Build Showcase",
-    url: "https://www.youtube.com/watch?v=DrUg_7gh4Pw",
-  },
-  {
-    game: "mc",
-    type: "youtube",
-    title: "Minecraft Short Clip",
-    url: "https://www.youtube.com/shorts/UmaWYA579Lc",
-  },
-];
+videoInput.addEventListener("change", () => {
+  const [file] = videoInput.files || [];
+  if (!file) return;
 
-const systemReduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const storedMotion = localStorage.getItem("gameplon-motion");
-let revealObserver;
-let toastTimer;
-let activeFilter = "all";
-let lightboxIndex = 0;
-let isReducedMotion = false;
+  if (videoUrl) URL.revokeObjectURL(videoUrl);
+  videoUrl = URL.createObjectURL(file);
 
-function placeholderSvgData(label) {
-  const safeLabel = encodeURIComponent(label);
-  return `data:image/svg+xml,${
-    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 450'%3E" +
-    "%3Crect width='800' height='450' fill='%230b1327'/%3E" +
-    "%3Crect x='20' y='20' width='760' height='410' rx='18' fill='none' stroke='%235f8ee5' stroke-width='3' stroke-dasharray='10 10'/%3E" +
-    `%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%238fd6ff' font-size='36' font-family='Arial'%3E${safeLabel}%3C/text%3E` +
-    "%3C/svg%3E"
-  }`;
-}
+  player.src = videoUrl;
+  analyzeBtn.disabled = false;
+  noteEvents = [];
+  clearTab();
+  toggleExportButtons(false);
+  statusText.textContent = "영상이 준비되었습니다. 분석 버튼을 눌러주세요.";
+});
 
-function attachImageFallback(img, label) {
-  img.addEventListener(
-    "error",
-    () => {
-      img.src = placeholderSvgData(label);
-      img.classList.add("is-fallback");
-    },
-    { once: true }
-  );
-}
+analyzeBtn.addEventListener("click", async () => {
+  if (!player.src) return;
 
-function youtubeVideoId(url) {
+  analyzeBtn.disabled = true;
+  statusText.textContent = "오디오 분석 중... (영상 길이에 따라 5~20초)";
+
   try {
-    const parsed = new URL(url);
-    if (parsed.hostname.includes("youtu.be")) {
-      return parsed.pathname.replace("/", "");
-    }
-    if (parsed.searchParams.has("v")) {
-      return parsed.searchParams.get("v");
-    }
-    const pathParts = parsed.pathname.split("/").filter(Boolean);
-    return pathParts[pathParts.length - 1] || "";
-  } catch {
-    return "";
+    const audioBuffer = await extractAudioBuffer(player);
+    const bpm = Number(tempoInput.value) || 96;
+    noteEvents = generateTabFromAudio(audioBuffer, bpm);
+    renderTab(noteEvents, audioBuffer.duration);
+    toggleExportButtons(noteEvents.length > 0);
+    statusText.textContent = `분석 완료: ${noteEvents.length}개 노트 이벤트 생성`;
+  } catch (error) {
+    console.error(error);
+    statusText.textContent = "분석 실패: 브라우저가 영상 디코딩을 지원하는지 확인해주세요.";
+  } finally {
+    analyzeBtn.disabled = false;
   }
-}
+});
 
-function clipThumbnail(clip) {
-  if (clip.type === "youtube") {
-    const id = youtubeVideoId(clip.url);
-    if (id) {
-      return `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
-    }
-  }
+exportTxtBtn.addEventListener("click", () => {
+  if (!noteEvents.length) return;
 
-  if (clip.thumb) {
-    return clip.thumb;
-  }
+  const lines = [
+    "# Fingerstyle TAB Export",
+    `# total_events=${noteEvents.length}`,
+    "# columns: time_sec\tstring\tfret\tfreq_hz\tmidi",
+  ];
 
-  return placeholderSvgData("Clip Placeholder");
-}
-
-function setupRevealObservers(reducedMotion) {
-  if (revealObserver) {
-    revealObserver.disconnect();
-    revealObserver = undefined;
-  }
-
-  const revealItems = document.querySelectorAll(".reveal");
-  revealItems.forEach((item) => item.classList.remove("in-view"));
-
-  if (reducedMotion) {
-    revealItems.forEach((item) => item.classList.add("in-view"));
-    return;
-  }
-
-  revealObserver = new IntersectionObserver(
-    (entries, observer) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("in-view");
-          observer.unobserve(entry.target);
-        }
-      });
-    },
-    { threshold: 0.12, rootMargin: "0px 0px -8% 0px" }
-  );
-
-  revealItems.forEach((item) => revealObserver.observe(item));
-}
-
-function applyMotionPreference(reducedMotion) {
-  isReducedMotion = reducedMotion;
-  document.documentElement.classList.toggle("motion-reduced", reducedMotion);
-  document.body.classList.toggle("motion-reduced", reducedMotion);
-
-  if (motionToggle) {
-    motionToggle.checked = reducedMotion;
-  }
-
-  setupRevealObservers(reducedMotion);
-}
-
-function renderBuildGallery() {
-  if (!buildGallery) {
-    return;
-  }
-
-  buildGallery.innerHTML = "";
-
-  BUILD_IMAGES.forEach((item, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "gallery-btn reveal";
-    button.dataset.index = String(index);
-
-    button.innerHTML = `
-      <figure class="gallery-item">
-        <img src="${item.src}" alt="${item.caption}" class="local-img" />
-        <figcaption>${item.caption}</figcaption>
-      </figure>
-    `;
-
-    const img = button.querySelector("img");
-    attachImageFallback(img, item.caption);
-
-    button.addEventListener("click", () => openLightbox(index));
-    buildGallery.appendChild(button);
-  });
-}
-
-function openLightbox(index) {
-  if (!lightbox || !lightboxImage || !lightboxCaption) {
-    return;
-  }
-
-  lightboxIndex = index;
-  const item = BUILD_IMAGES[lightboxIndex];
-  lightboxImage.src = item.src;
-  lightboxImage.alt = item.caption;
-  lightboxCaption.textContent = item.caption;
-  attachImageFallback(lightboxImage, item.caption);
-
-  lightbox.classList.add("is-open");
-  lightbox.setAttribute("aria-hidden", "false");
-}
-
-function closeLightbox() {
-  if (!lightbox) {
-    return;
-  }
-
-  lightbox.classList.remove("is-open");
-  lightbox.setAttribute("aria-hidden", "true");
-}
-
-function stepLightbox(direction) {
-  lightboxIndex = (lightboxIndex + direction + BUILD_IMAGES.length) % BUILD_IMAGES.length;
-  openLightbox(lightboxIndex);
-}
-
-function renderClips() {
-  if (!clipsGrid) {
-    return;
-  }
-
-  clipsGrid.innerHTML = "";
-
-  CLIPS.forEach((clip, index) => {
-    const mappedGame = clip.game === "mc" ? "minecraft" : "cs2";
-    const clipCard = document.createElement("article");
-    clipCard.className = `clip-card reveal delay-${(index % 3) + 1}`;
-    clipCard.dataset.game = mappedGame;
-
-    const thumb = clipThumbnail(clip);
-    const sourceLabel = clip.type.toUpperCase();
-
-    clipCard.innerHTML = `
-      <a class="clip-link" href="${clip.url}" target="_blank" rel="noreferrer">
-        <div class="clip-thumb-wrap">
-          <img class="clip-thumb local-img" src="${thumb}" alt="${clip.title}" />
-          <div class="clip-thumb-overlay">
-            <p class="clip-title">${clip.title}</p>
-            <p class="clip-meta">${sourceLabel} • ${mappedGame === "cs2" ? "CS2" : "Minecraft"}</p>
-          </div>
-        </div>
-      </a>
-    `;
-
-    const img = clipCard.querySelector("img");
-    attachImageFallback(img, clip.title);
-
-    clipsGrid.appendChild(clipCard);
+  noteEvents.forEach((event) => {
+    lines.push(
+      `${event.time.toFixed(3)}\t${STRINGS[event.stringIndex]}\t${event.fret}\t${event.freq.toFixed(
+        2,
+      )}\t${event.midi}`,
+    );
   });
 
-  applyClipFilter(activeFilter);
+  downloadTextFile("fingerstyle-tab.txt", lines.join("\n"));
+});
+
+exportJsonBtn.addEventListener("click", () => {
+  if (!noteEvents.length) return;
+
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    tuning: "E2 A2 D3 G3 B3 E4",
+    events: noteEvents,
+  };
+
+  downloadTextFile("fingerstyle-tab.json", JSON.stringify(payload, null, 2));
+});
+
+player.addEventListener("play", syncScrollLoop);
+player.addEventListener("pause", stopScrollLoop);
+player.addEventListener("ended", stopScrollLoop);
+player.addEventListener("seeked", syncTabScroll);
+
+function clearTab() {
+  tabTrack.innerHTML = "";
+  tabTrack.style.width = "100%";
+  tabLegend.textContent = "생성된 노트가 없습니다.";
 }
 
-function applyClipFilter(filter) {
-  activeFilter = filter;
+async function extractAudioBuffer(videoElement) {
+  const source = videoElement.currentSrc;
+  const response = await fetch(source);
+  const arrayBuffer = await response.arrayBuffer();
 
-  document.querySelectorAll(".clip-card").forEach((card) => {
-    const show = filter === "all" || card.dataset.game === filter;
-    card.style.display = show ? "block" : "none";
-  });
-
-  filterButtons.forEach((button) => {
-    const isActive = button.dataset.filter === filter;
-    button.classList.toggle("active", isActive);
-  });
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await context.decodeAudioData(arrayBuffer.slice(0));
+  await context.close();
+  return decoded;
 }
 
-function showToast(message) {
-  if (!toast) {
-    return;
-  }
+function generateTabFromAudio(audioBuffer, bpm) {
+  const channel = audioBuffer.getChannelData(0);
+  const sampleRate = audioBuffer.sampleRate;
 
-  toast.textContent = message;
-  toast.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => {
-    toast.classList.remove("show");
-  }, 2200);
-}
+  const hopSize = 2048;
+  const frameSize = 4096;
+  const minDistanceSeconds = 60 / Math.max(50, bpm * 2);
 
-function initStaticImageFallbacks() {
-  document.querySelectorAll("img.local-img[data-fallback]").forEach((img) => {
-    const label = img.getAttribute("data-fallback") || "Image";
-    attachImageFallback(img, label);
-  });
-}
+  let previousEnergy = 0;
+  let lastOnsetTime = -Infinity;
+  const events = [];
 
-function initEvents() {
-  if (motionToggle) {
-    motionToggle.addEventListener("change", (event) => {
-      const reduced = event.target.checked;
-      applyMotionPreference(reduced);
-      localStorage.setItem("gameplon-motion", reduced ? "reduced" : "full");
+  for (let offset = 0; offset + frameSize < channel.length; offset += hopSize) {
+    const frame = channel.subarray(offset, offset + frameSize);
+    const energy = rms(frame);
+    const flux = Math.max(0, energy - previousEnergy);
+    previousEnergy = energy;
+
+    const time = offset / sampleRate;
+    if (flux < 0.008 || time - lastOnsetTime < minDistanceSeconds) continue;
+
+    const frequency = detectPitchAutoCorrelation(frame, sampleRate);
+    if (!Number.isFinite(frequency) || frequency < 70 || frequency > 1200) continue;
+
+    const midi = frequencyToMidi(frequency);
+    const tabPos = midiToTab(midi);
+    if (!tabPos) continue;
+
+    events.push({
+      time,
+      midi,
+      freq: frequency,
+      stringIndex: tabPos.stringIndex,
+      fret: tabPos.fret,
     });
+
+    lastOnsetTime = time;
   }
 
-  filterButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      applyClipFilter(button.dataset.filter);
-    });
-  });
-
-  if (contactForm) {
-    contactForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      contactForm.reset();
-      showToast("Message sent. I will reply soon.");
-    });
-  }
-
-  if (lightboxClose) {
-    lightboxClose.addEventListener("click", closeLightbox);
-  }
-
-  if (lightboxPrev) {
-    lightboxPrev.addEventListener("click", () => stepLightbox(-1));
-  }
-
-  if (lightboxNext) {
-    lightboxNext.addEventListener("click", () => stepLightbox(1));
-  }
-
-  if (lightbox) {
-    lightbox.addEventListener("click", (event) => {
-      if (event.target === lightbox) {
-        closeLightbox();
-      }
-    });
-  }
-
-  document.addEventListener("keydown", (event) => {
-    if (!lightbox || !lightbox.classList.contains("is-open")) {
-      return;
-    }
-
-    if (event.key === "Escape") {
-      closeLightbox();
-    }
-
-    if (event.key === "ArrowRight") {
-      stepLightbox(1);
-    }
-
-    if (event.key === "ArrowLeft") {
-      stepLightbox(-1);
-    }
-  });
+  return events;
 }
 
-const initialReducedMotion =
-  storedMotion === "reduced" || (storedMotion === null && systemReduceMotion);
+function rms(samples) {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    sum += samples[i] * samples[i];
+  }
+  return Math.sqrt(sum / samples.length);
+}
 
-initStaticImageFallbacks();
-renderBuildGallery();
-renderClips();
-initEvents();
-applyMotionPreference(initialReducedMotion);
+function detectPitchAutoCorrelation(frame, sampleRate) {
+  const size = frame.length;
+  let bestOffset = -1;
+  let bestCorrelation = 0;
+
+  for (let offset = 24; offset < 1200; offset += 1) {
+    let correlation = 0;
+    for (let i = 0; i < size - offset; i += 1) {
+      correlation += frame[i] * frame[i + offset];
+    }
+
+    if (correlation > bestCorrelation) {
+      bestCorrelation = correlation;
+      bestOffset = offset;
+    }
+  }
+
+  if (bestOffset <= 0 || bestCorrelation < 0.02) return NaN;
+  return sampleRate / bestOffset;
+}
+
+function frequencyToMidi(frequency) {
+  return Math.round(69 + 12 * Math.log2(frequency / 440));
+}
+
+function midiToTab(midi) {
+  const candidates = [];
+
+  for (let stringIndex = 0; stringIndex < STRING_MIDI.length; stringIndex += 1) {
+    const fret = midi - STRING_MIDI[stringIndex];
+    if (fret >= 0 && fret <= 20) {
+      candidates.push({ stringIndex, fret });
+    }
+  }
+
+  if (!candidates.length) return null;
+  return candidates.sort((a, b) => a.fret - b.fret)[0];
+}
+
+function renderTab(events, duration) {
+  clearTab();
+
+  const minWidth = Math.max(tabViewport.clientWidth, duration * PX_PER_SECOND + 120);
+  tabTrack.style.width = `${minWidth}px`;
+
+  const rowLabels = document.createElement("div");
+  rowLabels.className = "tab-strings";
+
+  STRINGS.forEach((stringName) => {
+    const row = document.createElement("div");
+    row.className = "string-row";
+    row.dataset.string = stringName;
+    rowLabels.appendChild(row);
+  });
+
+  tabTrack.appendChild(rowLabels);
+
+  events.forEach((event) => {
+    const note = document.createElement("div");
+    note.className = "tab-note";
+    note.style.left = `${event.time * PX_PER_SECOND}px`;
+    note.style.top = `${event.stringIndex * 48 + 14}px`;
+    note.textContent = `${event.fret}`;
+    note.title = `${STRINGS[event.stringIndex]}줄 ${event.fret}프렛 (${event.freq.toFixed(1)}Hz)`;
+    tabTrack.appendChild(note);
+  });
+
+  tabLegend.textContent =
+    "참고: 단일 음 기준 자동 추정 결과입니다. 실제 핑거스타일의 동시 다성음/슬랩/하모닉은 보정 편집이 필요합니다.";
+}
+
+function syncScrollLoop() {
+  cancelAnimationFrame(rafId);
+
+  const loop = () => {
+    syncTabScroll();
+    if (!player.paused && !player.ended) {
+      rafId = requestAnimationFrame(loop);
+    }
+  };
+
+  rafId = requestAnimationFrame(loop);
+}
+
+function stopScrollLoop() {
+  cancelAnimationFrame(rafId);
+}
+
+function syncTabScroll() {
+  const currentX = player.currentTime * PX_PER_SECOND;
+  const target = Math.max(0, currentX - tabViewport.clientWidth * 0.35);
+  tabViewport.scrollLeft = target;
+}
+
+function toggleExportButtons(enabled) {
+  exportTxtBtn.disabled = !enabled;
+  exportJsonBtn.disabled = !enabled;
+}
+
+function downloadTextFile(filename, content) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
